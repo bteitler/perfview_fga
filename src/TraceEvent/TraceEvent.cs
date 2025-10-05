@@ -1369,7 +1369,7 @@ namespace Microsoft.Diagnostics.Tracing
             ret.next = null;                                    // the clone is not in any linked list.  
             if (eventRecord != null)
             {
-                int userDataLength = (EventDataLength + 3) / 4 * 4;            // DWORD align
+                int userDataLength = (EventDataLength + 3) & ~3; // DWORD align
                 int clonedExtendedDataNeeded = 0;
 
                 // We need to copy out the RelatedActivityID if it is there.  
@@ -1433,7 +1433,7 @@ namespace Microsoft.Diagnostics.Tracing
             ret.next = null;                                    // the clone is not in any linked list.  
             if (eventRecord != null)
             {
-                int userDataLength = (EventDataLength + 3) / 4 * 4;            // DWORD align
+                int userDataLength = (EventDataLength + 3) & ~3; // DWORD align
                 int extendedDataLength = 0;
 
                 // We need to copy out the RelatedActivityID if it is there.  
