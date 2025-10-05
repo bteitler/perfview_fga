@@ -776,6 +776,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             callStacks = new TraceCallStacks(this, codeAddresses);
             parsers = new Dictionary<string, TraceEventParser>();
             stats = new TraceEventStats(this);
+            bufferSizeToClonedEventPool = new Dictionary<int, Queue<TraceEvent>>();
             machineName = "";
             osName = "";
             osBuild = "";
@@ -866,7 +867,38 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 // the next event, and not the current event.
                 eventCount++;
 
-                realTimeQueue.Enqueue(new QueueEntry(data.Clone(), Environment.TickCount));
+                TraceEvent eventToEnqueue = null;
+                //if (countForEvent.m_count > 4096)
+                {
+                    // Only try to cache events that we have seen a lot of to try to avoid
+                    // lots of little pools of different sizes if possible.
+
+                    int bufferSize = data.PreviewClonedBufferSize();
+                    Queue<TraceEvent> pool;
+                    if (!bufferSizeToClonedEventPool.TryGetValue(bufferSize, out pool))
+                    {
+                        pool = new Queue<TraceEvent>();
+                        bufferSizeToClonedEventPool[bufferSize] = pool;
+                    }
+                    
+                    if (pool.Count > 0)
+                    {
+                        // Take an event off the queue and clone into it
+                        eventToEnqueue = pool.Dequeue();
+                        data.CloneTo(eventToEnqueue);
+                    }
+                    else
+                    {
+                        // Have no candidate in the pool, so just clone normally.
+                        eventToEnqueue = data.Clone();
+                    }
+                }
+                //else
+                //{
+                //    eventToEnqueue = data.Clone();
+                //}
+
+                realTimeQueue.Enqueue(new QueueEntry(eventToEnqueue, Environment.TickCount));
             }
         }
 
@@ -891,7 +923,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 eventInRealTimeSource = realTimeSource.Lookup(toSend.eventRecord);
                 eventInRealTimeSource.userData = toSend.userData;
                 eventInRealTimeSource.eventIndex = toSend.eventIndex;           // Lookup assigns the EventIndex, but we want to keep the original.
-                eventInRealTimeSource.myBuffer = toSend.myBuffer;
+                eventInRealTimeSource.clonedBuffer = toSend.clonedBuffer;
                 realTimeSource.Dispatch(eventInRealTimeSource);
             }
             finally
@@ -899,13 +931,14 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 realTimeEvent = null;
             }
 
+            //benteitler: Can't do this anymore because we are re-using the cloned events.
             // Optimization, remove 'toSend' from the finalization queue.
-            Debug.Assert(toSend.myBuffer != IntPtr.Zero);
-            GC.SuppressFinalize(toSend);    // Tell the finalizer you don't need it because I will do the cleanup
+            //Debug.Assert(toSend.clonedBuffer != IntPtr.Zero);
+            //GC.SuppressFinalize(toSend);    // Tell the finalizer you don't need it because I will do the cleanup
             // Do the cleanup, but also keep toSend alive during the dispatch and until finalization was suppressed.
-            System.Runtime.InteropServices.Marshal.FreeHGlobal(toSend.myBuffer);
-            toSend.instanceContainerID = null;
-            eventInRealTimeSource.myBuffer = IntPtr.Zero;
+            //System.Runtime.InteropServices.Marshal.FreeHGlobal(toSend.clonedBuffer);
+            //toSend.clonedInstanceContainerID = null;
+            //eventInRealTimeSource.clonedBuffer = IntPtr.Zero;
         }
 
         /// <summary>
@@ -946,7 +979,17 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 }
 
                 DispatchClonedEvent(entry.data);
-                realTimeQueue.Dequeue();
+                TraceEvent data = realTimeQueue.Dequeue().data;
+
+                int bufferSize = data.clonedBufferSize;
+                Queue<TraceEvent> pool;
+                if (!bufferSizeToClonedEventPool.TryGetValue(bufferSize, out pool))
+                {
+                    pool = new Queue<TraceEvent>();
+                    bufferSizeToClonedEventPool[bufferSize] = pool;
+                }
+                // Put the cloned event in the pool for reuse.
+                pool.Enqueue(data);
             }
 
             // Try to keep our memory under control by removing old data.
@@ -4179,6 +4222,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         private TraceCallStacks callStacks;
         private TraceCodeAddresses codeAddresses;
         private TraceEventStats stats;
+        private Dictionary<int, Queue<TraceEvent>> bufferSizeToClonedEventPool;
 
         private DeferedRegion lazyRawEvents;
         private DeferedRegion lazyEventsToStacks;

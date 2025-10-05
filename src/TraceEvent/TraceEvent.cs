@@ -908,11 +908,11 @@ namespace Microsoft.Diagnostics.Tracing
             get
             {
                 // handle the cloned case, we put it first in the buffer. 
-                if (myBuffer != IntPtr.Zero)
+                if (clonedBuffer != IntPtr.Zero)
                 {
-                    if (myBuffer != (IntPtr)eventRecord)
+                    if (clonedBuffer != (IntPtr)eventRecord)
                     {
-                        return *((Guid*)myBuffer);
+                        return *((Guid*)clonedBuffer);
                     }
                 }
                 else
@@ -991,9 +991,9 @@ namespace Microsoft.Diagnostics.Tracing
             get
             {
                 // Handle the cloned case.
-                if (instanceContainerID != null)
+                if (clonedInstanceContainerID != null)
                 {
-                    return instanceContainerID;
+                    return clonedInstanceContainerID;
                 }
 
                 // Non-cloned case.
@@ -1341,6 +1341,23 @@ namespace Microsoft.Diagnostics.Tracing
         }
 
         /// <summary>
+        /// Preview how many bytes will be needed in the cloned user data buffer
+        /// if we decide to clone this event.  This can be used to help cache
+        /// and re-use TraceEvents that are the same size.
+        internal virtual unsafe int PreviewClonedBufferSize()
+        {
+            int userDataLength = (EventDataLength + 3) / 4 * 4;
+            int clonedExtendedDataNeeded = 0;
+            Guid relatedActivityID = RelatedActivityID;
+            if (relatedActivityID != default(Guid))
+            {
+                clonedExtendedDataNeeded += sizeof(Guid);
+            }
+
+            return sizeof(TraceEventNativeMethods.EVENT_RECORD) + userDataLength;
+        }
+
+        /// <summary>
         /// The events passed to the callback functions only last as long as the callback, so if you need to
         /// keep the information around after that you need to copy it.   This method makes that copy.
         /// <para>This method is more expensive than copy out all the event data from the TraceEvent instance
@@ -1349,6 +1366,70 @@ namespace Microsoft.Diagnostics.Tracing
         public virtual unsafe TraceEvent Clone()
         {
             TraceEvent ret = (TraceEvent)MemberwiseClone();     // Clone myself. 
+            ret.next = null;                                    // the clone is not in any linked list.  
+            if (eventRecord != null)
+            {
+                int userDataLength = (EventDataLength + 3) / 4 * 4;            // DWORD align
+                int clonedExtendedDataNeeded = 0;
+
+                // We need to copy out the RelatedActivityID if it is there.  
+                Guid relatedActivityID = RelatedActivityID;
+                if (relatedActivityID != default(Guid))
+                {
+                    clonedExtendedDataNeeded += sizeof(Guid);
+                }
+
+                ret.clonedBufferSize = clonedExtendedDataNeeded + sizeof(TraceEventNativeMethods.EVENT_RECORD) + userDataLength;
+                IntPtr extendedDataBuffer = Marshal.AllocHGlobal(ret.clonedBufferSize);
+                IntPtr eventRecordBuffer = (IntPtr)(((byte*)extendedDataBuffer) + clonedExtendedDataNeeded);
+                IntPtr userDataBuffer = (IntPtr)(((byte*)eventRecordBuffer) + sizeof(TraceEventNativeMethods.EVENT_RECORD));
+
+                // store the related activity ID
+                if (clonedExtendedDataNeeded != 0)
+                {
+                    *((Guid*)extendedDataBuffer) = relatedActivityID;
+                }
+
+                ret.clonedBuffer = extendedDataBuffer;
+                ret.clonedInstanceContainerID = ContainerID;
+
+                CopyBlob((IntPtr)eventRecord, eventRecordBuffer, sizeof(TraceEventNativeMethods.EVENT_RECORD));
+                ret.eventRecord = (TraceEventNativeMethods.EVENT_RECORD*)eventRecordBuffer;
+
+                CopyBlob(userData, userDataBuffer, userDataLength);
+                ret.userData = userDataBuffer;
+                ret.eventRecord->UserData = ret.userData;
+                 
+                // we don't have extended data (we have to handle each case specially.  Related Activity ID above)
+                ret.eventRecord->ExtendedDataCount = 0;
+                ret.eventRecord->ExtendedData = (TraceEventNativeMethods.EVENT_HEADER_EXTENDED_DATA_ITEM*)IntPtr.Zero;
+            }
+            return ret;
+        }
+
+        // benteitler: Work in progress for cloning in object into an existing TraceEvent that MUST
+        // be of the same type for efficiency and must have been created by using Clone() previously.
+        public virtual unsafe void CloneTo(TraceEvent ret)
+        {
+            // Shallow copy the managed fields
+            ret.lookupAsClassic = lookupAsClassic;
+            ret.lookupAsWPP = lookupAsWPP;
+            ret.containsSelfDescribingMetadata = containsSelfDescribingMetadata;
+            ret.eventID = eventID;
+            ret.opcode = opcode;
+            ret.opcodeName = opcodeName;
+            ret.task = task;
+            ret.taskGuid = taskGuid;
+            ret.providerGuid = providerGuid;
+            ret.providerName = providerName;
+            ret.eventNameIsJustTaskName = eventNameIsJustTaskName;
+            ret.eventName = eventName;
+            ret.payloadNames = payloadNames;
+            ret.traceEventSource = traceEventSource;
+            ret.eventIndex = eventIndex;
+            // Cloned instance just has containerID stored explicitly
+            ret.clonedInstanceContainerID = ContainerID;
+
             ret.next = null;                                    // the clone is not in any linked list.  
             if (eventRecord != null)
             {
@@ -1362,7 +1443,9 @@ namespace Microsoft.Diagnostics.Tracing
                     extendedDataLength += sizeof(Guid);
                 }
 
-                IntPtr extendedDataBuffer = Marshal.AllocHGlobal(extendedDataLength + sizeof(TraceEventNativeMethods.EVENT_RECORD) + userDataLength);
+                // We are re-using the existing cloned objects buffer as it should be the exact same
+                // size we need (otherwise it is illegal to clone).
+                IntPtr extendedDataBuffer = ret.clonedBuffer;
                 IntPtr eventRecordBuffer = (IntPtr)(((byte*)extendedDataBuffer) + extendedDataLength);
                 IntPtr userDataBuffer = (IntPtr)(((byte*)eventRecordBuffer) + sizeof(TraceEventNativeMethods.EVENT_RECORD));
 
@@ -1372,8 +1455,8 @@ namespace Microsoft.Diagnostics.Tracing
                     *((Guid*)extendedDataBuffer) = relatedActivityID;
                 }
 
-                ret.myBuffer = extendedDataBuffer;
-                ret.instanceContainerID = ContainerID;
+                ret.clonedBuffer = extendedDataBuffer;
+                ret.clonedInstanceContainerID = ContainerID;
 
                 CopyBlob((IntPtr)eventRecord, eventRecordBuffer, sizeof(TraceEventNativeMethods.EVENT_RECORD));
                 ret.eventRecord = (TraceEventNativeMethods.EVENT_RECORD*)eventRecordBuffer;
@@ -1385,8 +1468,9 @@ namespace Microsoft.Diagnostics.Tracing
                 // we don't have extended data (we have to handle each case specially.  Related Activity ID above)
                 ret.eventRecord->ExtendedDataCount = 0;
                 ret.eventRecord->ExtendedData = (TraceEventNativeMethods.EVENT_HEADER_EXTENDED_DATA_ITEM*)IntPtr.Zero;
+
+                ret.cloneCount++;
             }
-            return ret;
         }
 
         /// <summary>
@@ -2159,9 +2243,9 @@ namespace Microsoft.Diagnostics.Tracing
         {
             // Most Data does not own its data, so this is usually a no-op. 
 
-            if (myBuffer != IntPtr.Zero)
+            if (clonedBuffer != IntPtr.Zero)
             {
-                Marshal.FreeHGlobal(myBuffer);
+                Marshal.FreeHGlobal(clonedBuffer);
             }
         }
 
@@ -2385,8 +2469,10 @@ namespace Microsoft.Diagnostics.Tracing
         protected internal string[] payloadNames;
         internal TraceEventSource traceEventSource;
         internal EventIndex eventIndex;               // something that uniquely identifies this event in the stream.  
-        internal IntPtr myBuffer;                     // If the raw data is owned by this instance, this points at it.  Normally null.
-        internal string instanceContainerID;          // If the raw data is owned by this instance (e.g. the event has been cloned), then if there is a container ID it will be saved here.  Normally null.
+        internal IntPtr clonedBuffer;                 // If the raw data is owned by this instance, this points at it.  Normally null.
+        internal int    clonedBufferSize;             // If the raw data is owned by this instance, this is the size of the buffer.  Normally 0.
+        internal string clonedInstanceContainerID;    // If the raw data is owned by this instance (e.g. the event has been cloned), then if there is a container ID it will be saved here.  Normally null.
+        internal int    cloneCount;
         #endregion
     }
 
