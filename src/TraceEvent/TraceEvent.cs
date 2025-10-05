@@ -1436,6 +1436,10 @@ namespace Microsoft.Diagnostics.Tracing
             ret.clonedInstanceContainerID = ContainerID;
 
             ret.next = null;                                    // the clone is not in any linked list.  
+
+            ret.clonedIntoCount++;
+            this.clonedFromCount--;
+
             if (eventRecord != null)
             {
                 int userDataLength = (EventDataLength + 3) & ~3; // DWORD align
@@ -1477,8 +1481,6 @@ namespace Microsoft.Diagnostics.Tracing
                 // we don't have extended data (we have to handle each case specially.  Related Activity ID above)
                 ret.eventRecord->ExtendedDataCount = 0;
                 ret.eventRecord->ExtendedData = (TraceEventNativeMethods.EVENT_HEADER_EXTENDED_DATA_ITEM*)IntPtr.Zero;
-
-                ret.cloneCount++;
             }
         }
 
@@ -2255,6 +2257,7 @@ namespace Microsoft.Diagnostics.Tracing
             if (clonedBuffer != IntPtr.Zero)
             {
                 Marshal.FreeHGlobal(clonedBuffer);
+                clonedBuffer = IntPtr.Zero;
             }
         }
 
@@ -2481,7 +2484,8 @@ namespace Microsoft.Diagnostics.Tracing
         internal IntPtr clonedBuffer;                 // If the raw data is owned by this instance, this points at it.  Normally null.
         internal int    clonedBufferSize;             // If the raw data is owned by this instance, this is the size of the buffer.  Normally 0.
         internal string clonedInstanceContainerID;    // If the raw data is owned by this instance (e.g. the event has been cloned), then if there is a container ID it will be saved here.  Normally null.
-        internal int    cloneCount;
+        internal int    clonedIntoCount;
+        internal int    clonedFromCount;
         #endregion
     }
 

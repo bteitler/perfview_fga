@@ -182,7 +182,21 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             traceLog.pointerSize = ETWTraceEventSource.GetOSPointerSize();
 
             traceLog.realTimeQueue = new Queue<QueueEntry>();
-            traceLog.realTimeFlushTimer = new Timer(_ => traceLog.FlushRealTimeEvents(minDispatchDelayMSec), null, minDispatchDelayMSec, minDispatchDelayMSec);
+            traceLog.realTimeFlushThreadShouldExit = false;
+            traceLog.realTimeFlushThread = new Thread(() =>
+            {
+                // Use a reasonable fraction of the minimum delay so we don't
+                // add too much latency but also don't impose too much CPU penalty
+                // spinning.
+                int sleepIntervalMSec = minDispatchDelayMSec / 20;
+                while (!traceLog.realTimeFlushThreadShouldExit)
+                {
+                    traceLog.FlushRealTimeEvents();
+                    Thread.Sleep(sleepIntervalMSec);
+                }
+            });
+            traceLog.realTimeFlushThread.Name = "TraceLog_RealTimeFlush";
+            traceLog.realTimeFlushThread.Start();
             traceLog.rawEventSourceToConvert.AllEvents += traceLog.onAllEventsRealTime;
 
             // See if we are on Win7 and have a separate kernel session associated with 'session'
@@ -580,6 +594,21 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         /// override
         /// </summary>
         public override int EventsLost { get { return eventsLost; } }
+
+        // benteitler: working on experimental memory and
+        // performance optimizations.
+        public bool ExperimentalPerfOptimizations
+        {
+            get
+            {
+                return experimentalPerfOptimizations;
+            }
+            set
+            {
+                experimentalPerfOptimizations = value;
+            }
+        }
+
         /// <summary>
         /// The file path for the ETLX file associated with this TraceLog instance.
         /// </summary>
@@ -869,6 +898,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
 
                 TraceEvent eventToEnqueue = null;
                 //if (countForEvent.m_count > 4096)
+                if (experimentalPerfOptimizations)
                 {
                     // Only try to cache events that we have seen a lot of to try to avoid
                     // lots of little pools of different sizes if possible.
@@ -892,11 +922,12 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                         // Have no candidate in the pool, so just clone normally.
                         eventToEnqueue = data.Clone();
                     }
+                } 
+                else
+                {
+                    // Default behavior was to always Clone
+                    eventToEnqueue = data.Clone();
                 }
-                //else
-                //{
-                //    eventToEnqueue = data.Clone();
-                //}
 
                 realTimeQueue.Enqueue(new QueueEntry(eventToEnqueue, Environment.TickCount));
             }
@@ -965,6 +996,15 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             }
         }
 
+        internal void StopRealTimeFlushThread()
+        {
+            if (realTimeFlushThread != null)
+            {
+                realTimeFlushThreadShouldExit = true;
+                realTimeFlushThread.Join();
+            }
+        }
+
         private void FlushRealTimeEventsNoLock(int minimumAgeMs)
         {
             var nowTicks = Environment.TickCount;
@@ -972,7 +1012,8 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             while (realTimeQueue.Count > 0)
             {
                 QueueEntry entry = realTimeQueue.Peek();
-                // If it has been in the queue less than 1 second, we we wait until next time) & 3FFFFFF does wrap around subtraction.
+                // If it has been in the queue less than the configured minimium age (1 second or more recommended),
+                // we we wait until next time) & 3FFFFFF does wrap around subtraction.
                 if (minimumAgeMs > 0 && ((nowTicks - entry.enqueueTick) & 0x3FFFFFFF) < minimumAgeMs)
                 {
                     break;
@@ -981,15 +1022,20 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 DispatchClonedEvent(entry.data);
                 TraceEvent data = realTimeQueue.Dequeue().data;
 
-                int bufferSize = data.clonedBufferSize;
-                Queue<TraceEvent> pool;
-                if (!bufferSizeToClonedEventPool.TryGetValue(bufferSize, out pool))
+                // Performance optimization mode attempts to reuse the cloned events
+                // to reduce the cost of garbage collection.
+                if (experimentalPerfOptimizations)
                 {
-                    pool = new Queue<TraceEvent>();
-                    bufferSizeToClonedEventPool[bufferSize] = pool;
+                    int bufferSize = data.clonedBufferSize;
+                    Queue<TraceEvent> pool;
+                    if (!bufferSizeToClonedEventPool.TryGetValue(bufferSize, out pool))
+                    {
+                        pool = new Queue<TraceEvent>();
+                        bufferSizeToClonedEventPool[bufferSize] = pool;
+                    }
+                    // Put the cloned event in the pool for reuse.
+                    pool.Enqueue(data);
                 }
-                // Put the cloned event in the pool for reuse.
-                pool.Enqueue(data);
             }
 
             // Try to keep our memory under control by removing old data.
@@ -3470,11 +3516,8 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         {
             if (disposing)
             {
-                // If we have a timer dispose (stop) it.
-                if (realTimeFlushTimer != null)
-                {
-                    realTimeFlushTimer.Dispose();
-                }
+                // If we have a real time thread, stop it
+                StopRealTimeFlushThread();
 
                 if (lazyRawEvents.Deserializer != null)
                 {
@@ -4214,6 +4257,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         private long bootTime100ns;     // This is a windows FILETIME object
         private bool hasPdbInfo;
         private bool truncated;     // stopped because the file was too large.
+        private bool experimentalPerfOptimizations;
         private EventIndex firstTimeInversion;
         private int sampleProfileInterval100ns;
         private string machineName;
@@ -4609,9 +4653,10 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         private Queue<QueueEntry> realTimeQueue;                   // We have to wait a bit to hook up stacks, so we put real time entries in the queue
         private TraceEvent realTimeEvent;                          // The current event being processed.
         private bool isFlushingRealTimeEvents;                     // Are we in the middle of dispatching the real time events.
+        private volatile bool realTimeFlushThreadShouldExit;
 
         // These can ONLY be accessed by the thread calling RealTimeEventSource.Process();
-        private Timer realTimeFlushTimer;                          // Ensures the queue gets flushed even if there are no incoming events.
+        private Thread realTimeFlushThread;
         private Func<TraceEvent, ulong, bool> fnAddAddressToCodeAddressMap; // PERF: Cached delegate to avoid allocations in inner loop
         #endregion
     }
@@ -4656,8 +4701,8 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                     TraceLog.rawKernelEventSource.StopProcessing();
                     kernelTask.Wait();
 
-                    // Flush all outstanding events in the realTimeQueue.
-                    TraceLog.FlushRealTimeEvents();
+                    // Make sure the flushing thread is stopped.
+                    TraceLog.StopRealTimeFlushThread();
                 }
                 return true;
             }
