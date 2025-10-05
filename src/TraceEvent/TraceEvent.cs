@@ -1358,6 +1358,7 @@ namespace Microsoft.Diagnostics.Tracing
         }
 
         /// <summary>
+        /// benteitler: I optimized this method a bit
         /// The events passed to the callback functions only last as long as the callback, so if you need to
         /// keep the information around after that you need to copy it.   This method makes that copy.
         /// <para>This method is more expensive than copy out all the event data from the TraceEvent instance
@@ -1393,10 +1394,14 @@ namespace Microsoft.Diagnostics.Tracing
                 ret.clonedBuffer = extendedDataBuffer;
                 ret.clonedInstanceContainerID = ContainerID;
 
-                CopyBlob((IntPtr)eventRecord, eventRecordBuffer, sizeof(TraceEventNativeMethods.EVENT_RECORD));
+                Buffer.MemoryCopy(eventRecord, eventRecordBuffer.ToPointer(), sizeof(TraceEventNativeMethods.EVENT_RECORD), sizeof(TraceEventNativeMethods.EVENT_RECORD));
+                //CopyBlob((IntPtr)eventRecord, eventRecordBuffer, sizeof(TraceEventNativeMethods.EVENT_RECORD));
                 ret.eventRecord = (TraceEventNativeMethods.EVENT_RECORD*)eventRecordBuffer;
 
-                CopyBlob(userData, userDataBuffer, userDataLength);
+                if (userDataLength > 0)
+                    Buffer.MemoryCopy(userData.ToPointer(), userDataBuffer.ToPointer(), userDataLength, userDataLength);
+
+                // CopyBlob(userData, userDataBuffer, userDataLength);
                 ret.userData = userDataBuffer;
                 ret.eventRecord->UserData = ret.userData;
                  
@@ -1458,10 +1463,14 @@ namespace Microsoft.Diagnostics.Tracing
                 ret.clonedBuffer = extendedDataBuffer;
                 ret.clonedInstanceContainerID = ContainerID;
 
-                CopyBlob((IntPtr)eventRecord, eventRecordBuffer, sizeof(TraceEventNativeMethods.EVENT_RECORD));
+                // CopyBlob((IntPtr)eventRecord, eventRecordBuffer, sizeof(TraceEventNativeMethods.EVENT_RECORD));
+                Buffer.MemoryCopy(eventRecord, eventRecordBuffer.ToPointer(), sizeof(TraceEventNativeMethods.EVENT_RECORD), sizeof(TraceEventNativeMethods.EVENT_RECORD));
                 ret.eventRecord = (TraceEventNativeMethods.EVENT_RECORD*)eventRecordBuffer;
 
-                CopyBlob(userData, userDataBuffer, userDataLength);
+                // CopyBlob(userData, userDataBuffer, userDataLength);
+                if (userDataLength > 0)
+                    Buffer.MemoryCopy(userData.ToPointer(), userDataBuffer.ToPointer(), userDataLength, userDataLength);
+
                 ret.userData = userDataBuffer;
                 ret.eventRecord->UserData = ret.userData;
 
