@@ -191,7 +191,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 int sleepIntervalMSec = minDispatchDelayMSec / 20;
                 while (!traceLog.realTimeFlushThreadShouldExit)
                 {
-                    traceLog.FlushRealTimeEvents();
+                    traceLog.FlushRealTimeEvents(minDispatchDelayMSec);
                     Thread.Sleep(sleepIntervalMSec);
                 }
                 // One last time
@@ -954,7 +954,9 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             TraceEvent eventInRealTimeSource = null;
             try
             {
-                // benteitler NOTE: The Lookup function has SIDE EFFECTS!
+                // Fill in the template for the provided TraceEvent's event record.
+                // This is how we get away with not having to copy all the member fields of the
+                // TraceEvent wrapper we put in the queue.
                 eventInRealTimeSource = realTimeSource.Lookup(toSend.eventRecord);
                 eventInRealTimeSource.userData = toSend.userData;
                 eventInRealTimeSource.eventIndex = toSend.eventIndex;           // Lookup assigns the EventIndex, but we want to keep the original.
