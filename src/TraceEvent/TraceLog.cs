@@ -918,7 +918,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                     {
                         // Take an event off the queue and clone into it
                         eventToEnqueue = pool.Dequeue();
-                        data.CloneTo(eventToEnqueue);
+                        data.CloneOnlyBufferDataToNoAlloc(eventToEnqueue);
                     }
                     else
                     {
