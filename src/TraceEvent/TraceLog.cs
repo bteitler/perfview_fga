@@ -194,6 +194,8 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                     traceLog.FlushRealTimeEvents();
                     Thread.Sleep(sleepIntervalMSec);
                 }
+                // One last time
+                traceLog.FlushRealTimeEvents();
             });
             traceLog.realTimeFlushThread.Name = "TraceLog_RealTimeFlush";
             traceLog.realTimeFlushThread.Start();
@@ -805,7 +807,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             callStacks = new TraceCallStacks(this, codeAddresses);
             parsers = new Dictionary<string, TraceEventParser>();
             stats = new TraceEventStats(this);
-            bufferSizeToClonedEventPool = new Dictionary<int, Queue<TraceEvent>>();
+            bufferTypeToClonedEventPool = new Dictionary<TypeIntKey, Queue<TraceEvent>>();
             machineName = "";
             osName = "";
             osBuild = "";
@@ -903,12 +905,13 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                     // Only try to cache events that we have seen a lot of to try to avoid
                     // lots of little pools of different sizes if possible.
 
-                    int bufferSize = data.PreviewClonedBufferSize();
+                    int bufferSize = data.StoreClonedBufferSectionSizes();
                     Queue<TraceEvent> pool;
-                    if (!bufferSizeToClonedEventPool.TryGetValue(bufferSize, out pool))
+                    TypeIntKey poolKeyStruct = new TypeIntKey(data.GetType(), bufferSize); // "struct" prefix to remind us this will not be heap allocated.
+                    if (!bufferTypeToClonedEventPool.TryGetValue(poolKeyStruct, out pool))
                     {
                         pool = new Queue<TraceEvent>();
-                        bufferSizeToClonedEventPool[bufferSize] = pool;
+                        bufferTypeToClonedEventPool[poolKeyStruct] = pool;
                     }
                     
                     if (pool.Count > 0)
@@ -951,11 +954,16 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             TraceEvent eventInRealTimeSource = null;
             try
             {
+                // benteitler NOTE: The Lookup function has SIDE EFFECTS!
                 eventInRealTimeSource = realTimeSource.Lookup(toSend.eventRecord);
                 eventInRealTimeSource.userData = toSend.userData;
                 eventInRealTimeSource.eventIndex = toSend.eventIndex;           // Lookup assigns the EventIndex, but we want to keep the original.
                 eventInRealTimeSource.clonedBuffer = toSend.clonedBuffer;
                 realTimeSource.Dispatch(eventInRealTimeSource);
+                // !!!!!!!!! benteitler: Extremely important, as need to null the cloned buffer
+                // on the template after use, otherwise when we tear everything down to destuct the TraceLog,
+                // we will try to free the same buffer as the TraceEvent Clone that took ownership of it.
+                eventInRealTimeSource.clonedBuffer = IntPtr.Zero;
             }
             finally
             {
@@ -1028,13 +1036,19 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 {
                     int bufferSize = data.clonedBufferSize;
                     Queue<TraceEvent> pool;
-                    if (!bufferSizeToClonedEventPool.TryGetValue(bufferSize, out pool))
+                    TypeIntKey poolKeyStruct = new TypeIntKey(data.GetType(), bufferSize);
+                    if (!bufferTypeToClonedEventPool.TryGetValue(poolKeyStruct, out pool))
                     {
                         pool = new Queue<TraceEvent>();
-                        bufferSizeToClonedEventPool[bufferSize] = pool;
+                        bufferTypeToClonedEventPool[poolKeyStruct] = pool;
                     }
                     // Put the cloned event in the pool for reuse.
                     pool.Enqueue(data);
+                }
+                else
+                {
+                    // Dispose of the native memory immediately for consistency.
+                    data.Dispose();
                 }
             }
 
@@ -4266,7 +4280,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         private TraceCallStacks callStacks;
         private TraceCodeAddresses codeAddresses;
         private TraceEventStats stats;
-        private Dictionary<int, Queue<TraceEvent>> bufferSizeToClonedEventPool;
+        private Dictionary<TypeIntKey, Queue<TraceEvent>> bufferTypeToClonedEventPool;
 
         private DeferedRegion lazyRawEvents;
         private DeferedRegion lazyEventsToStacks;
@@ -4647,6 +4661,31 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             public QueueEntry(TraceEvent data, int enqueueTick) { this.data = data; this.enqueueTick = enqueueTick; }
             public TraceEvent data;
             public int enqueueTick;
+        }
+
+        // A key for a dictionary that is a pair of (Type, int).  This is used for determining whether
+        // two TraceEvents are compatible with re-use, as they must have the same raw object Type as well
+        // as having preallocated the same size user data buffer.
+        private readonly struct TypeIntKey : IEquatable<TypeIntKey>
+        {
+            public readonly Type Type;
+            public readonly int Id;
+
+            public TypeIntKey(Type type, int id)
+            {
+                Type = type ?? throw new ArgumentNullException(nameof(type));
+                Id = id;
+            }
+
+            public bool Equals(TypeIntKey other) => Type == other.Type && Id == other.Id;
+            public override bool Equals(object obj) => obj is TypeIntKey other && Equals(other);
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    return ((Type?.GetHashCode() ?? 0) * 397) ^ Id;
+                }
+            }
         }
 
         internal TraceLogEventSource realTimeSource;               // used to call back in real time case.
