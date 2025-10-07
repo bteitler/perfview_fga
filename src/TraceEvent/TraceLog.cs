@@ -29,6 +29,7 @@ using System.Diagnostics.Tracing;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -557,15 +558,15 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         public TraceEvent GetEvent(EventIndex eventIndex)
         {
             // TODO this can probably be made more efficient.
-            int pageIndex = (int)(((uint)eventIndex) / eventsPerPage);
-            int eventOnPage = ((int)eventIndex) - (pageIndex * eventsPerPage);
+            long pageIndex = (long)(((ulong)eventIndex) / eventsPerPage);
+            long eventOnPage = ((long)eventIndex) - (pageIndex * eventsPerPage);
 
             if (eventPages.Count <= pageIndex)
             {
                 return null;
             }
 
-            IEnumerable<TraceEvent> events = new TraceEvents(this, eventPages[pageIndex].TimeQPC, long.MaxValue, null, false);
+            IEnumerable<TraceEvent> events = new TraceEvents(this, eventPages[(int)pageIndex].TimeQPC, long.MaxValue, null, false);
             var iterator = events.GetEnumerator();
             while (iterator.MoveNext())
             {
@@ -580,7 +581,9 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         /// <summary>
         /// The total number of events in the log.
         /// </summary>
-        public int EventCount { get { return eventCount; } }
+        public int EventCount { get { return (int)eventCount; } }
+
+        public long EventCountLong { get { return eventCount; } }
 
         /// <summary>
         /// The size of the log file in bytes.
@@ -858,7 +861,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         {
             // we need to guard our data structures from concurrent access.  TraceLog data
             // is modified by this code as well as code in FlushRealTimeEvents.
-            lock (realTimeQueue)
+            lock (this)
             {
                 // we delay things so we have a chance to match up stacks.
 
@@ -991,7 +994,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             // is modified by this code as well as code in FlushRealTimeEvents.
             if (!isFlushingRealTimeEvents)
             {
-                lock (realTimeQueue)
+                lock (this)
                 {
                     isFlushingRealTimeEvents = true;
                     try
@@ -1029,6 +1032,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                     break;
                 }
 
+                // Send the event off to the end user's callbacks
                 DispatchClonedEvent(entry.data);
                 TraceEvent data = realTimeQueue.Dequeue().data;
 
@@ -1064,6 +1068,11 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             // We could be more accurate, but this at least keeps THESE arrays under control.
             int MaxEventCountBeforeReset = Math.Max(realTimeQueue.Count * 3, 1000);
 
+            // benteitler: TODO: This is awful as it causes data races with stack walk building
+            // and probably other things.  Even though the events are gone, we still need the structure not
+            // to be modified while other events are inserted into it in order.  This is what is causing
+            // rare crashes while running for a while (sometimes happens quickly out of bad luck).
+            // TODO: Should switch to a circular queue, and should add locking around all internal event processing.
             if (eventsToStacks.Count > MaxEventCountBeforeReset)
             {
                 RemoveAllButLastEntries(ref eventsToStacks, realTimeQueue.Count);
@@ -1503,10 +1512,44 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             rawEvents.Clr.GCFinalizeObject += doNothing;
             rawEvents.Clr.MethodJittingStarted += doNothing;
 
-            // This is required to ensure that self-describing metadata gets ingested before the event's extended data gets overwritten by the TraceLog.
             if (IsRealTime)
             {
+                // This is required to ensure that self-describing metadata gets ingested before the event's extended data gets overwritten by the TraceLog.
                 rawEvents.Dynamic.All += doNothing;
+
+                // Real time needs to take a lock around the dispatch since we have a separate thread
+                // to push events from our queue to the end user.
+                rawEvents.AddDispatchHook((anEvent, dispatcher) => { 
+                    if (dispatcher == null)
+                    {
+                        return;
+                    }
+
+                    lock (this) { 
+                        // Do the original event
+                        dispatcher(anEvent); 
+                    } 
+                });
+
+                // Real time needs to take a lock around the dispatch since we have a separate thread
+                // to push events from our queue to the end user.
+                ETWTraceEventSource kernelETWTraceEventSource = kernelParser.Source as ETWTraceEventSource;
+                if (kernelETWTraceEventSource != null)
+                {
+                    kernelETWTraceEventSource.AddDispatchHook((anEvent, dispatcher) =>
+                    {
+                        if (dispatcher == null)
+                        {
+                            return;
+                        }
+
+                        lock (this)
+                        {
+                            // Do the original event
+                            dispatcher(anEvent);
+                        }
+                    });
+                }
             }
 
             //kernelParser.AddCallbackForEvents<PageFaultTraceData>(doNothing);        // Lots of page fault ones
@@ -2501,7 +2544,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 {
                     if (options.OnLostEvents != null)
                     {
-                        options.OnLostEvents(true, EventsLost, eventCount);
+                        options.OnLostEvents(true, EventsLost, (int)eventCount);
                     }
 
                     options.ConversionLog.WriteLine("Truncated events to {0:n} events.  Change the value of /MaxEventCount or remove it entirely.", maxEventCount);
@@ -4290,7 +4333,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         private DeferedRegion lazyCswitchBlockingEventsToStacks;
         private TraceEvents events;
         private GrowableArray<EventPageEntry> eventPages;   // The offset offset of a page
-        private int eventCount;                             // Total number of events
+        private long eventCount;                            // Total number of events
         private bool processingDisabled;                    // Have we turned off processing because of a MaxCount?
         private int numberOnPage;                           // Total number of events
         private bool removeFromStream;                      // Don't put these in the serialized stream.
@@ -4579,6 +4622,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         /// <summary>
         /// Add a new entry that associates the stack 'stackIndex' with the event with index 'eventIndex'
         /// </summary>
+        [MethodImpl(MethodImplOptions.NoOptimization)]
         internal void AddStackToEvent(EventIndex eventIndex, CallStackIndex stackIndex)
         {
             int whereToInsertIndex = eventsToStacks.Count;

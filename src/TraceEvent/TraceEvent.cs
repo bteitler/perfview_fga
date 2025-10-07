@@ -2649,7 +2649,7 @@ namespace Microsoft.Diagnostics.Tracing
     }
 
     /// <summary>
-    /// EventIdex is a unsigned integer that is unique to a particular event. EventIndex is guaranteed to be 
+    /// EventIndex is a unsigned integer that is unique to a particular event. EventIndex is guaranteed to be 
     /// unique over the whole log.  It is only used by ETLX files.  
     /// <para>
     /// Currently the event ID simply the index in the log file of the event.  We don't however guarantee ordering.
@@ -2660,12 +2660,12 @@ namespace Microsoft.Diagnostics.Tracing
     /// EventIndex is a 32 bit number limits it to 4Gig events in an ETLX file.  
     /// </para>
     /// </summary>
-    public enum EventIndex : uint
+    public enum EventIndex : ulong
     {
         /// <summary>
         /// Invalid is an EventIndex that will not be used by a normal event. 
         /// </summary>
-        Invalid = unchecked((uint)-1)
+        Invalid = unchecked((ulong)-1)
     };
 
     /// <summary>
