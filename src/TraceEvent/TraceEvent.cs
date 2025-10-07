@@ -1445,6 +1445,8 @@ namespace Microsoft.Diagnostics.Tracing
         /// </summary>
         internal virtual unsafe void CloneOnlyBufferDataToNoAlloc(TraceEvent ret)
         {
+            ret.eventIndex = this.eventIndex;
+
             ret.next = null; // the clone is not in any linked list.  
             if (eventRecord != null)
             {
@@ -2660,12 +2662,12 @@ namespace Microsoft.Diagnostics.Tracing
     /// EventIndex is a 32 bit number limits it to 4Gig events in an ETLX file.  
     /// </para>
     /// </summary>
-    public enum EventIndex : ulong
+    public enum EventIndex : uint
     {
         /// <summary>
         /// Invalid is an EventIndex that will not be used by a normal event. 
         /// </summary>
-        Invalid = unchecked((ulong)-1)
+        Invalid = unchecked((uint)-1)
     };
 
     /// <summary>
