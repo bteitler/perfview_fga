@@ -1019,7 +1019,6 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         private void FlushRealTimeEventsNoLock(int minimumAgeMs)
         {
             var nowTicks = Environment.TickCount;
-            // TODO review.
             while (realTimeQueue.Count > 0)
             {
                 QueueEntry entry = realTimeQueue.Peek();
@@ -1048,6 +1047,12 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                     }
                     // Put the cloned event in the pool for reuse.
                     pool.Enqueue(data);
+
+                    // benteitler: Just get rid of the mapping immediately for minimal memory use.
+                    // This strictly enforces that the end user must access the stack related information if they want it
+                    // before returning from their event callback, but we are OK with that especially if it optimizes
+                    // CPU utilization (before there was an insertion sort insertion and another shift to remove batches).
+                    eventToStackDictRealTime.Remove(data.eventIndex);
                 }
                 else
                 {
@@ -1067,9 +1072,12 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             int MaxEventCountBeforeReset = Math.Max(realTimeQueue.Count * 3, 1000);
 
             // TODO: benteitler - revisit if this is correct
-            if (eventsToStacks.Count > MaxEventCountBeforeReset)
+            if (!experimentalPerfOptimizations) // In perf optimized mode, eventsToStacks is not populated at all
             {
-                RemoveAllButLastEntries(ref eventsToStacks, realTimeQueue.Count);
+                if (eventsToStacks.Count > MaxEventCountBeforeReset)
+                {
+                    RemoveAllButLastEntries(ref eventsToStacks, realTimeQueue.Count);
+                }
             }
 
             if (eventsToCodeAddresses.Count > MaxEventCountBeforeReset)
@@ -1136,6 +1144,12 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         /// </summary>
         internal CallStackIndex GetCallStackIndexForEventIndex(EventIndex eventIndex)
         {
+            if (experimentalPerfOptimizations)
+            {
+                // In perf optimized mode, we just have a simple dictionary lookup on a temporary structure
+                return eventToStackDictRealTime.TryGetValue(eventIndex, out var callStackIndex) ? callStackIndex : CallStackIndex.Invalid;
+            }
+
             // TODO optimize for sequential access.
             lazyEventsToStacks.FinishRead();
             int index;
@@ -4345,6 +4359,11 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
 
         private TraceModuleFiles moduleFiles;
         private GrowableArray<EventsToStackIndex> eventsToStacks;
+
+        // Used to optimize a common operation for real time stack use which is to
+        // look up the stack for an event that an end user callback might need.
+        private Dictionary<EventIndex, CallStackIndex> eventToStackDictRealTime = new Dictionary<EventIndex, CallStackIndex>();
+
         /// <summary>
         /// The context switch event gives the stack of the thread GETTING the CPU, but it is also very useful
         /// to have this stack at the point of blocking.   cswitchBlockingEventsToStacks gives this stack.
@@ -4623,22 +4642,33 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             int whereToInsertIndex = eventsToStacks.Count;
             if (IsRealTime)
             {
-                // We need the array to be sorted, we do insertion sort, which works great because you are almost always
-                // the last element (or very near the end).
-                // for non-real-time we do the sorting in bulk at the end of the trace.
-                while (0 < whereToInsertIndex)
+                if (experimentalPerfOptimizations)
                 {
-                    --whereToInsertIndex;
-                    var prevIndex = eventsToStacks[whereToInsertIndex].EventIndex;
-                    if (prevIndex <= eventIndex)
+                    // benteitler: Just map it for experimental perf opt mode,
+                    // I think this struct isn't used anywhere in real time
+                    // where we need the linearized eventsToStacks
+                    eventToStackDictRealTime[eventIndex] = stackIndex;
+                    return;
+                }
+                else
+                {
+                    // We need the array to be sorted, we do insertion sort, which works great because you are almost always
+                    // the last element (or very near the end).
+                    // for non-real-time we do the sorting in bulk at the end of the trace.
+                    while (0 < whereToInsertIndex)
                     {
-                        if (prevIndex == eventIndex)
+                        --whereToInsertIndex;
+                        var prevIndex = eventsToStacks[whereToInsertIndex].EventIndex;
+                        if (prevIndex <= eventIndex)
                         {
-                            DebugWarn(true, "Warning, two stacks given to the same event with ID " + eventIndex + " discarding the second one", null);
-                            return;
+                            if (prevIndex == eventIndex)
+                            {
+                                DebugWarn(true, "Warning, two stacks given to the same event with ID " + eventIndex + " discarding the second one", null);
+                                return;
+                            }
+                            whereToInsertIndex++;   // insert after this index is bigger than the element compared.
+                            break;
                         }
-                        whereToInsertIndex++;   // insert after this index is bigger than the element compared.
-                        break;
                     }
                 }
             }

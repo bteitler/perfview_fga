@@ -1475,13 +1475,13 @@ namespace Microsoft.Diagnostics.Tracing
                 // This is precomputing the container ID which has some perf cost
                 ret.clonedInstanceContainerID = ContainerID;
 
-                //Buffer.MemoryCopy(eventRecord, eventRecordBuffer.ToPointer(), sizeof(TraceEventNativeMethods.EVENT_RECORD), sizeof(TraceEventNativeMethods.EVENT_RECORD));
-                CopyBlob((IntPtr)eventRecord, eventRecordBuffer, sizeof(TraceEventNativeMethods.EVENT_RECORD));
+                Buffer.MemoryCopy(eventRecord, eventRecordBuffer.ToPointer(), sizeof(TraceEventNativeMethods.EVENT_RECORD), sizeof(TraceEventNativeMethods.EVENT_RECORD));
+                //CopyBlob((IntPtr)eventRecord, eventRecordBuffer, sizeof(TraceEventNativeMethods.EVENT_RECORD));
                 ret.eventRecord = (TraceEventNativeMethods.EVENT_RECORD*)eventRecordBuffer;
 
-                //if (userDataLength > 0)
-                //    Buffer.MemoryCopy(userData.ToPointer(), userDataBuffer.ToPointer(), userDataLength, userDataLength);
-                CopyBlob(userData, userDataBuffer, this.clonedUserDataLength);
+                if (this.clonedUserDataLength > 0)
+                    Buffer.MemoryCopy(userData.ToPointer(), userDataBuffer.ToPointer(), this.clonedUserDataLength, this.clonedUserDataLength);
+                //CopyBlob(userData, userDataBuffer, this.clonedUserDataLength);
                 ret.userData = userDataBuffer;
                 ret.eventRecord->UserData = ret.userData;
 

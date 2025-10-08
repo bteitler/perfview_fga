@@ -36,12 +36,14 @@ namespace TraceEventSamples
             Console.WriteLine("Pausing 3 seconds for you to notice the statement above.");
             Thread.Sleep(3000);
 
-            Debugger.Break();       // About to run the actual demos. hit F5 to continue  
+            //Debugger.Break();       // About to run the actual demos. hit F5 to continue  
 
             // Note that we are set up by default to run all the samples in order.  
             // Obviously, it is more likely that you will care about some scenarios more than others,
             // so simply comment out (or place a early return statement) to select the demos you 
-            // actually care about.   
+            // actually care about.
+            //
+            /*
             SimpleEventSourceMonitor.Run(); Debugger.Break();       // Break point between demos, hit F5 to continue. 
             SimpleEventSourceFile.Run(); Debugger.Break();
             SimpleOSEventMonitor.Run(); Debugger.Break();
@@ -54,10 +56,11 @@ namespace TraceEventSamples
             KernelAndClrMonitorWin7.Run(); Debugger.Break();
             KernelAndClrFileWin7.Run(); Debugger.Break();
             SimpleTraceLog.Run(); Debugger.Break();
-            TraceLogMonitor.Run(); Debugger.Break();
-            SimpleFileRelogger.Run(); Debugger.Break();
-            SimpleMonitorRelogger.Run(); Debugger.Break();
-            Console.WriteLine("Done with samples");
+            */
+            TraceLogMonitor.Run();
+            //SimpleFileRelogger.Run(); Debugger.Break();
+            //SimpleMonitorRelogger.Run(); Debugger.Break();
+            //Console.WriteLine("Done with samples");
         }
     }
 }
