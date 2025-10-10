@@ -4330,7 +4330,12 @@ namespace Microsoft.Diagnostics.Tracing.Parsers.Kernel
         // public int SpareByte { get { return GetByteAt(11); } }
 
         public ThreadWaitReason OldThreadWaitReason { get { return (ThreadWaitReason)GetByteAt(0xc); } }
-        public ThreadWaitMode OldThreadWaitMode { get { return (ThreadWaitMode)GetByteAt(0xd); } }
+
+        // benteitler: Patched wait mode to extract just the first bit and also added the Bam Qos levels
+        // based on the documentation here: https://www.geoffchappell.com/studies/windows/km/ntoskrnl/inc/api/ntwmi/wmi_contextswap.htm
+    public ThreadWaitMode OldThreadWaitMode { get { return (ThreadWaitMode)(GetByteAt(0xd) & 0x1); } }
+        public byte NewThreadBamQosLevel { get { return (byte)((GetByteAt(0xd) & 0xE) >> 1); } }
+        public byte OldThreadBamQosLevel { get { return (byte)((GetByteAt(0xd) & 0x70) >> 4); } }
         public ThreadState OldThreadState { get { return (ThreadState)GetByteAt(0xe); } }
         public int OldThreadWaitIdealProcessor { get { return GetByteAt(15); } }
         public int NewThreadWaitTime { get { return GetInt32At(16); } }
