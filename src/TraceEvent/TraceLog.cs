@@ -458,6 +458,16 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         }
 
         /// <summary>
+        /// Opens an existing Extended Trace Event log file (ETLX).  See also TraceLog.OpenOrCreate.
+        /// </summary>
+        public TraceLog(string etlxFilePath, bool wasSavedFromRealTime)
+            : this()
+        {
+            this.wasSavedFromRealTime = wasSavedFromRealTime;
+            InitializeFromFile(etlxFilePath);
+        }
+
+        /// <summary>
         /// Opens an existing Extended Trace Event log file (ETLX) file.  See also TraceLog.OpenOrCreate.
         /// </summary>
         public TraceLog(string etlxFilePath)
@@ -3980,35 +3990,38 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
 
             Debug.Assert((int)serializer.Writer.GetLabel() % 8 == 0);
 
-            serializer.Log("<Marker name=\"RawEvents\"/>");
-            lazyRawEvents.Write(serializer, delegate
+            if (!IsRealTime) // benteitler: Not clear to me it makes sense to support this in real time mode.
             {
-                // Get the events from a given raw stream
-                TraceEventDispatcher dispatcher = rawEventSourceToConvert;
-                if (dispatcher == null)
+                serializer.Log("<Marker name=\"RawEvents\"/>");
+                lazyRawEvents.Write(serializer, delegate
                 {
-                    dispatcher = events.GetSource();
-                }
-
-                CopyRawEvents(dispatcher, serializer.Writer);
-                // Write sentinel event with a long.MaxValue timestamp mark the end of the data.
-                for (int i = 0; i < 11; i++)
-                {
-                    if (i == 2)
+                    // Get the events from a given raw stream
+                    TraceEventDispatcher dispatcher = rawEventSourceToConvert;
+                    if (dispatcher == null)
                     {
-                        serializer.Write(long.MaxValue);
+                        dispatcher = events.GetSource();
                     }
-                    else
-                    {
-                        serializer.Write((long)0);          // The important field here is the EventDataSize field
-                    }
-                }
 
-                if (HasCallStacks || options.AlwaysResolveSymbols)
-                {
-                    codeAddresses.LookupSymbols(options);
-                }
-            });
+                    CopyRawEvents(dispatcher, serializer.Writer);
+                    // Write sentinel event with a long.MaxValue timestamp mark the end of the data.
+                    for (int i = 0; i < 11; i++)
+                    {
+                        if (i == 2)
+                        {
+                            serializer.Write(long.MaxValue);
+                        }
+                        else
+                        {
+                            serializer.Write((long)0);          // The important field here is the EventDataSize field
+                        }
+                    }
+
+                    if (HasCallStacks || options.AlwaysResolveSymbols)
+                    {
+                        codeAddresses.LookupSymbols(options);
+                    }
+                });
+            }
 
             serializer.Log("<Marker name=\"sessionStartTime\"/>");
             serializer.Write(_syncTimeUTC.ToFileTimeUtc());
@@ -4130,7 +4143,6 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         }
         void IFastSerializable.FromStream(Deserializer deserializer)
         {
-            deserializer.Log("<Marker Name=\"RawEvents\"/>");
             byte align;
             deserializer.Read(out align);
             while (align > 0)
@@ -4140,8 +4152,12 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 --align;
             }
 
-            // Skip all the raw events.
-            lazyRawEvents.Read(deserializer, null);
+            if (!wasSavedFromRealTime) // benteitler: If we are saved from real time, we don't even have the raw events
+            {
+                deserializer.Log("<Marker Name=\"RawEvents\"/>");
+                // Skip all the raw events.
+                lazyRawEvents.Read(deserializer, null);
+            }
 
             deserializer.Log("<Marker Name=\"sessionStartTime\"/>");
             _syncTimeUTC = DateTime.FromFileTimeUtc(deserializer.ReadInt64());
@@ -4319,6 +4335,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         // #TraceLogVars
         // see #TraceEventVars
         private string etlxFilePath;
+        private bool wasSavedFromRealTime = false;
         private int memorySizeMeg;
         private int eventsLost;
         private string osName;
@@ -9374,7 +9391,6 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 serializer.Write(log);
                 serializer.Write(moduleFiles);
                 serializer.Write(methods);
-
                 serializer.WriteTagged(CodeAddressInfoSerializationVersion);
                 serializer.Write(codeAddresses.Count);
                 serializer.Log("<WriteCollection name=\"codeAddresses\" count=\"" + codeAddresses.Count + "\">\r\n");
