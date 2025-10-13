@@ -1063,6 +1063,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                     // before returning from their event callback, but we are OK with that especially if it optimizes
                     // CPU utilization (before there was an insertion sort insertion and another shift to remove batches).
                     eventToStackDictRealTime.Remove(data.eventIndex);
+                    eventToBlockingStackDictRealTime.Remove(data.eventIndex);
                 }
                 else
                 {
@@ -1095,9 +1096,12 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 RemoveAllButLastEntries(ref eventsToCodeAddresses, realTimeQueue.Count);
             }
 
-            if (cswitchBlockingEventsToStacks.Count > MaxEventCountBeforeReset)
+            if (!experimentalPerfOptimizations) // In perf optimized mode, cswitchBlockingEventsToStacks is not populated at all
             {
-                RemoveAllButLastEntries(ref cswitchBlockingEventsToStacks, realTimeQueue.Count);
+                if (cswitchBlockingEventsToStacks.Count > MaxEventCountBeforeReset)
+                {
+                    RemoveAllButLastEntries(ref cswitchBlockingEventsToStacks, realTimeQueue.Count);
+                }
             }
         }
 
@@ -1262,6 +1266,12 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         /// </summary>
         internal CallStackIndex GetCallStackIndexForCSwitchBlockingEventIndex(EventIndex eventIndex)
         {
+            if (experimentalPerfOptimizations)
+            {
+                // In perf optimized mode, we just have a simple dictionary lookup on a temporary structure
+                return eventToBlockingStackDictRealTime.TryGetValue(eventIndex, out var callStackIndex) ? callStackIndex : CallStackIndex.Invalid;
+            }
+
             // TODO optimize for sequential access.
             lazyCswitchBlockingEventsToStacks.FinishRead();
             int index;
@@ -3248,7 +3258,20 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                             eventLog.AddStackToEvent(EventIndex, UserModeStackIndex);
                             if (BlockingEventIndex != Tracing.EventIndex.Invalid)
                             {
-                                eventLog.cswitchBlockingEventsToStacks.Add(new EventsToStackIndex(BlockingEventIndex, UserModeStackIndex));
+                                // TODO benteitler: Looks like original author should have refactored this isn't
+                                // the TraceLog like the above "AddStackToEvent", call it "AddBlockingStackToEvent"
+                                // or something.
+                                if (eventLog.IsRealTime && eventLog.experimentalPerfOptimizations)
+                                {
+                                    // benteitler: Just map it for experimental perf opt mode,
+                                    // I think this struct isn't used anywhere in real time
+                                    // where we need the linearized eventsToStacks
+                                    eventLog.eventToBlockingStackDictRealTime[BlockingEventIndex] = UserModeStackIndex;
+                                }
+                                else
+                                {
+                                    eventLog.cswitchBlockingEventsToStacks.Add(new EventsToStackIndex(BlockingEventIndex, UserModeStackIndex));
+                                }
                             }
 
                             // Trace.WriteLine("Writing Stack " + UserModeStackIndex + " for Event " + EventIndex);
@@ -4380,6 +4403,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         // Used to optimize a common operation for real time stack use which is to
         // look up the stack for an event that an end user callback might need.
         private Dictionary<EventIndex, CallStackIndex> eventToStackDictRealTime = new Dictionary<EventIndex, CallStackIndex>();
+        private Dictionary<EventIndex, CallStackIndex> eventToBlockingStackDictRealTime = new Dictionary<EventIndex, CallStackIndex>();
 
         /// <summary>
         /// The context switch event gives the stack of the thread GETTING the CPU, but it is also very useful
