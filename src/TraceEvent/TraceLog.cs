@@ -818,7 +818,6 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             callStacks = new TraceCallStacks(this, codeAddresses);
             parsers = new Dictionary<string, TraceEventParser>();
             stats = new TraceEventStats(this);
-            bufferTypeToClonedEventPool = new Dictionary<TypeIntKey, Queue<TraceEvent>>();
             machineName = "";
             osName = "";
             osBuild = "";
@@ -910,19 +909,23 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 eventCount++;
 
                 TraceEvent eventToEnqueue = null;
-                //if (countForEvent.m_count > 4096)
+                QueueEntry realTimeQueueEntryStruct = new QueueEntry();
+
                 if (experimentalPerfOptimizations)
                 {
-                    // Only try to cache events that we have seen a lot of to try to avoid
-                    // lots of little pools of different sizes if possible.
+                    // TODO: Only try to cache events that we have seen a lot of to try to avoid
+                    // lots of little pools of different sizes if possible?  Would this help?
 
                     int bufferSize = data.StoreClonedBufferSectionSizes();
+                    // Pool out or create a buffer cache attached to the TraceEvenCounts structure we already keep per event
+                    // type for other reasons.
+                    Dictionary<int, Queue<TraceEvent>> bufferSizeToClonedEventPool =
+                        countForEvent.bufferSizeToClonedEventPool ??= new Dictionary<int, Queue<TraceEvent>>();
                     Queue<TraceEvent> pool;
-                    TypeIntKey poolKeyStruct = new TypeIntKey(data.GetType(), bufferSize); // "struct" prefix to remind us this will not be heap allocated.
-                    if (!bufferTypeToClonedEventPool.TryGetValue(poolKeyStruct, out pool))
+                    if (!bufferSizeToClonedEventPool.TryGetValue(bufferSize, out pool))
                     {
                         pool = new Queue<TraceEvent>();
-                        bufferTypeToClonedEventPool[poolKeyStruct] = pool;
+                        bufferSizeToClonedEventPool[bufferSize] = pool;
                     }
                     
                     if (pool.Count > 0)
@@ -936,6 +939,10 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                         // Have no candidate in the pool, so just clone normally.
                         eventToEnqueue = data.Clone();
                     }
+
+                    // Regardless, keep track of the pool in the real time queue
+                    // entry so we can put it back when we are done with it.
+                    realTimeQueueEntryStruct.clonedEventPool = pool;
                 } 
                 else
                 {
@@ -943,7 +950,9 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                     eventToEnqueue = data.Clone();
                 }
 
-                realTimeQueue.Enqueue(new QueueEntry(eventToEnqueue, Environment.TickCount));
+                realTimeQueueEntryStruct.data = eventToEnqueue;
+                realTimeQueueEntryStruct.enqueueTick = Environment.TickCount;
+                realTimeQueue.Enqueue(realTimeQueueEntryStruct);
             }
         }
 
@@ -1041,27 +1050,26 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
 
                 // Send the event off to the end user's callbacks
                 DispatchClonedEvent(entry.data);
-                TraceEvent data = realTimeQueue.Dequeue().data;
+                QueueEntry realTimeQueueEntryStruct = realTimeQueue.Dequeue();
+                TraceEvent data = realTimeQueueEntryStruct.data;
 
                 // Performance optimization mode attempts to reuse the cloned events
                 // to reduce the cost of garbage collection.
                 if (experimentalPerfOptimizations)
                 {
                     int bufferSize = data.clonedBufferSize;
-                    Queue<TraceEvent> pool;
-                    TypeIntKey poolKeyStruct = new TypeIntKey(data.GetType(), bufferSize);
-                    if (!bufferTypeToClonedEventPool.TryGetValue(poolKeyStruct, out pool))
+                    Queue<TraceEvent> pool = realTimeQueueEntryStruct.clonedEventPool;
+                    if (pool != null)
                     {
-                        pool = new Queue<TraceEvent>();
-                        bufferTypeToClonedEventPool[poolKeyStruct] = pool;
+                        // Put the cloned event in the pool for reuse.
+                        pool.Enqueue(data);
                     }
-                    // Put the cloned event in the pool for reuse.
-                    pool.Enqueue(data);
 
                     // benteitler: Just get rid of the mapping immediately for minimal memory use.
                     // This strictly enforces that the end user must access the stack related information if they want it
                     // before returning from their event callback, but we are OK with that especially if it optimizes
                     // CPU utilization (before there was an insertion sort insertion and another shift to remove batches).
+                    // TODO: Should I just make these properties on the event somehow for direct access?
                     eventToStackDictRealTime.Remove(data.eventIndex);
                     eventToBlockingStackDictRealTime.Remove(data.eventIndex);
                 }
@@ -4375,7 +4383,6 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         private TraceCallStacks callStacks;
         private TraceCodeAddresses codeAddresses;
         private TraceEventStats stats;
-        private Dictionary<TypeIntKey, Queue<TraceEvent>> bufferTypeToClonedEventPool;
 
         private DeferedRegion lazyRawEvents;
         private DeferedRegion lazyEventsToStacks;
@@ -4770,9 +4777,11 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         // Used for Real Time
         private struct QueueEntry
         {
+            public QueueEntry() {}
             public QueueEntry(TraceEvent data, int enqueueTick) { this.data = data; this.enqueueTick = enqueueTick; }
             public TraceEvent data;
             public int enqueueTick;
+            public Queue<TraceEvent> clonedEventPool;
         }
 
         // A key for a dictionary that is a pair of (Type, int).  This is used for determining whether
@@ -5372,6 +5381,8 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         // Not serialized
         private bool m_templateInited;
         private TraceEvent m_template;
+        // This is a pool of pre-cloned events for use in real time scenarios for efficiency. The key is the size of the user data buffer.
+        internal Dictionary<int, Queue<TraceEvent>> bufferSizeToClonedEventPool;
         #endregion
     }
 
