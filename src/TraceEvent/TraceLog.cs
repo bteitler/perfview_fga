@@ -181,7 +181,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
 
             var traceLog = new TraceLog(session.Source);
             traceLog.pointerSize = ETWTraceEventSource.GetOSPointerSize();
-
+            traceLog.lockObject = new object();
             traceLog.realTimeQueue = new Queue<QueueEntry>();
             traceLog.realTimeFlushThreadShouldExit = false;
             traceLog.realTimeFlushThread = new Thread(() =>
@@ -206,9 +206,9 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             if (session.m_kernelSession != null)
             {
                 // Make sure both sources only dispatch one at a time by taking a lock during dispatch.
-                session.m_kernelSession.Source.lockObj = traceLog.realTimeQueue;
+                session.m_kernelSession.Source.lockObj = traceLog.lockObject;
                 session.m_associatedWithTraceLog = true;                         // Indicate that it is OK to have the m_kernelSession.
-                session.Source.lockObj = traceLog.realTimeQueue;
+                session.Source.lockObj = traceLog.lockObject;
 
                 // Set up the callbacks to the kernel session.
                 traceLog.rawKernelEventSource = session.m_kernelSession.Source;
@@ -868,7 +868,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         {
             // we need to guard our data structures from concurrent access.  TraceLog data
             // is modified by this code as well as code in FlushRealTimeEvents.
-            lock (this)
+            lock (lockObject)
             {
                 // we delay things so we have a chance to match up stacks.
 
@@ -1011,7 +1011,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
             // is modified by this code as well as code in FlushRealTimeEvents.
             if (!isFlushingRealTimeEvents)
             {
-                lock (this)
+                lock (lockObject)
                 {
                     isFlushingRealTimeEvents = true;
                     try
@@ -1561,7 +1561,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                         return;
                     }
 
-                    lock (this) { 
+                    lock (lockObject) { 
                         // Do the original event
                         dispatcher(anEvent); 
                     } 
@@ -1579,7 +1579,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                             return;
                         }
 
-                        lock (this)
+                        lock (lockObject)
                         {
                             // Do the original event
                             dispatcher(anEvent);
@@ -4366,7 +4366,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         // #TraceLogVars
         // see #TraceEventVars
         private string etlxFilePath;
-        private bool wasSavedFromRealTime = false;
+        internal bool wasSavedFromRealTime = false;
         private int memorySizeMeg;
         private int eventsLost;
         private string osName;
@@ -4811,6 +4811,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
 
         internal TraceLogEventSource realTimeSource;               // used to call back in real time case.
         private Queue<QueueEntry> realTimeQueue;                   // We have to wait a bit to hook up stacks, so we put real time entries in the queue
+        private Object lockObject;
         private TraceEvent realTimeEvent;                          // The current event being processed.
         private bool isFlushingRealTimeEvents;                     // Are we in the middle of dispatching the real time events.
         private volatile bool realTimeFlushThreadShouldExit;
@@ -9591,7 +9592,17 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
 
             private MethodIndex TryLookupMethodOrModule(TraceCodeAddresses codeAddresses)
             {
-                if (!(codeAddresses.log.IsRealTime && methodOrProcessOrIlMapIndex < -1))
+                if (
+                    !(
+                    (codeAddresses.log.IsRealTime
+                        // benteitler: Added this to make sure we can record from realtime, serialize it to disk, then re-load it and resolve symbols
+                        // on demand for just the stacks we care about.
+                        // I think the original authors intent was to prevent lookups over and over for the same address that is failing
+                        // when we know we loaded from a normal .ETL file scenario
+                        || codeAddresses.log.wasSavedFromRealTime)
+                    &&
+                    methodOrProcessOrIlMapIndex < -1
+                    ))
                 {
                     return Microsoft.Diagnostics.Tracing.Etlx.MethodIndex.Invalid;
                 }
