@@ -198,6 +198,7 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
                 // One last time
                 traceLog.FlushRealTimeEvents();
             });
+            traceLog.realTimeFlushThread.IsBackground = true; // Don't block process shutdown.
             traceLog.realTimeFlushThread.Name = "TraceLog_RealTimeFlush";
             traceLog.realTimeFlushThread.Start();
             traceLog.rawEventSourceToConvert.AllEvents += traceLog.onAllEventsRealTime;
@@ -3624,11 +3625,11 @@ namespace Microsoft.Diagnostics.Tracing.Etlx
         /// </summary>
         protected override void Dispose(bool disposing)
         {
+            // If we have a real time thread, stop it
+            StopRealTimeFlushThread();
+
             if (disposing)
             {
-                // If we have a real time thread, stop it
-                StopRealTimeFlushThread();
-
                 if (lazyRawEvents.Deserializer != null)
                 {
                     lazyRawEvents.Deserializer.Dispose();
