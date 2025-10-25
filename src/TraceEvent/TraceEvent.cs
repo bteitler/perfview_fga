@@ -460,7 +460,7 @@ namespace Microsoft.Diagnostics.Tracing
         /// <summary>
         /// Converts the Query Performance Counter (QPC) ticks to a number of milliseconds from the start of the trace.   
         /// </summary>
-        internal double QPCTimeToRelMSec(long QPCTime)
+        public double QPCTimeToRelMSec(long QPCTime)
         {
             // Ensure that we have a certain amount of sanity (events don't occur before sessionStartTime).  
             if (QPCTime < sessionStartTimeQPC)
@@ -468,6 +468,26 @@ namespace Microsoft.Diagnostics.Tracing
                 QPCTime = sessionStartTimeQPC;
             }
 
+            // We used to have a sanity check to ensure that the time was always inside sessionEndTimeQPC
+            // ETLX files enforce this, but sometimes ETWTraceEventParser (ETL) traces have bad session times.
+            // After some thought, the best answer seems to be not to try to enforce this consistantancy.
+            // (it will be true for ETLX but maybe not for ETWTraceEventParser scenarios).  
+
+            Debug.Assert(sessionStartTimeQPC != 0 && _syncTimeQPC != 0 && _syncTimeUTC.Ticks != 0 && _QPCFreq != 0);
+            // TODO this does not work for very long traces.   
+            long diff = (QPCTime - sessionStartTimeQPC);
+            // For real time providers, the session start time is the time when the TraceEventSource was turned on
+            // but the session was turned on before that and events might have been buffered, which means you can
+            // have negative numbers.  
+            return diff * 1000.0 / QPCFreq;
+        }
+
+        /// <summary>
+        /// Converts the Query Performance Counter (QPC) ticks to a number of milliseconds from the start of the trace,
+        /// but don't clamp to session start time as the amount before the first data we have may be relevant to the caller.
+        /// </summary>
+        public double QPCTimeToRelMSecAllowNegative(long QPCTime)
+        {
             // We used to have a sanity check to ensure that the time was always inside sessionEndTimeQPC
             // ETLX files enforce this, but sometimes ETWTraceEventParser (ETL) traces have bad session times.
             // After some thought, the best answer seems to be not to try to enforce this consistantancy.
